@@ -580,7 +580,7 @@ var I18N_EN = {
 " 倒したボスの魂は巫女に吸い込まれ、「図鑑」ボタンで登録を確認できる":" Defeated bosses' souls are drawn into the Miko; check their registration with the Encyclopedia button",
 " 全22種の実績があり、タイトル画面右上の「実績」ボタン（":" There are 22 achievements in all; the Achievements button at the top right of the title screen (",
 "キー）で条件・解除状態・進捗を確認できる。解除すると画面右上に小さく通知が出る":" key) shows conditions, unlock state and progress. Unlocking one shows a small notification at the top right of the screen",
-" 上部の「画質：自動／軽量」で切り替える。「自動」では、弾幕が最も濃い場面で処理が重くなったときだけ、軌跡などの装飾演出を自動で少し抑えて滑らかさを保つ（弾の数・速さ・判定は変わらない）。「軽量」では内部の描画解像度を下げて拡大表示するため、さらに軽くなる代わりに見た目が少し柔らかくなる。設定はこの端末に保存される":" Switch with Quality: Auto / Light at the top. On Auto, only when the densest danmaku makes things heavy, decorative effects like trails are trimmed automatically to keep things smooth (bullet counts, speeds and hitboxes never change). On Light, the internal render resolution is lowered and upscaled — lighter still, at the cost of a slightly softer image. The setting is saved on this device",
+" 上部の「画質：自動／軽量」で切り替える。「自動」では、弾幕が最も濃い場面で処理が重くなったときだけ、軌跡などの装飾演出を自動で少し抑え、それでも重いときは内部の描画解像度も段階的に下げて滑らかさを保つ（弾の数・速さ・判定は変わらない）。「軽量」では内部の描画解像度を下げて拡大表示するため、さらに軽くなる代わりに見た目が少し柔らかくなる。設定はこの端末に保存される":" Switch with Quality: Auto / Light at the top. On Auto, only when the densest danmaku makes things heavy, decorative effects like trails are trimmed automatically, and if it is still heavy the internal render resolution also steps down to keep things smooth (bullet counts, speeds and hitboxes never change). On Light, the internal render resolution is lowered and upscaled — lighter still, at the cost of a slightly softer image. The setting is saved on this device",
 " お札・矢・貫通札・式神の弾・弾き返した弾は、発射から2.6秒たつと薄れて消える（画面を横断するには十分な時間）。全ての敵を貫通し終わった貫通札は、もう当たる相手がいないため早めに消える":" Talismans, arrows, Piercing Talismans, shikigami shots and parry-reflected bullets fade out 2.6 seconds after firing (plenty of time to cross the screen). A Piercing Talisman that has pierced every enemy disappears early, since nothing is left for it to hit",
 " ボスごとに変化（がしゃどくろ＝墓場、天狗＝山、雪女＝雪原、風神＆雷神＝嵐の空、九尾＝燃える神殿、ぬらりひょん＝闇に目が浮かぶ御殿）。全ステージとも敵の弾が見やすいよう、暗い紺系の色に統一されている":" Changes per boss (Gashadokuro = graveyard, Tengu = mountain, Yuki-onna = snowfield, Fujin & Raijin = stormy sky, Kyubi = burning shrine, Nurarihyon = a palace with eyes floating in darkness). Every stage uses dark navy tones so enemy bullets stay easy to see"
 };
@@ -866,12 +866,17 @@ function ac(){
       var d = noiseBuf.getChannelData(0); for(var i=0;i<len;i++) d[i] = Math.random()*2-1;
     }
   }
-  if(typeof kyubiDecode === "function") kyubiDecode(); /* 九尾専用曲：音声アンロック時にデコード */
-  if(typeof tenguDecode === "function") tenguDecode(); /* 天狗専用曲：音声アンロック時にデコード */
-  if(typeof gashaDecode === "function") gashaDecode(); /* がしゃどくろ専用曲：音声アンロック時にデコード */
-  if(typeof nurariDecode === "function") nurariDecode(); /* ぬらりひょん専用曲：音声アンロック時にデコード */
-  if(typeof yukiDecode === "function") yukiDecode(); /* 雪女専用曲：音声アンロック時にデコード */
-  if(typeof fujinDecode === "function") fujinDecode(); /* 風神＆雷神専用曲：音声アンロック時にデコード */
+  /* 専用曲のデコードはスケジューラ経由：今のボスの曲を先に、残りは
+     間隔を空けて1曲ずつ（アンロック直後に6曲まとめてデコードして
+     固まらないようにする。queueBgmDecode は後方で定義される） */
+  if(typeof queueBgmDecode === "function"){
+    if(typeof kyubiDecode === "function") queueBgmDecode(kyubiDecode, "kyubi");
+    if(typeof tenguDecode === "function") queueBgmDecode(tenguDecode, "tengu");
+    if(typeof gashaDecode === "function") queueBgmDecode(gashaDecode, "gasha");
+    if(typeof nurariDecode === "function") queueBgmDecode(nurariDecode, "nurari");
+    if(typeof yukiDecode === "function") queueBgmDecode(yukiDecode, "yuki");
+    if(typeof fujinDecode === "function") queueBgmDecode(fujinDecode, "fujinraijin");
+  }
   if(AC && AC.state === "suspended") AC.resume();
   if(AC && soundOn && typeof BGM !== "undefined" && !BGM.playing) BGM.start();
   return AC;
@@ -1836,6 +1841,53 @@ var BGM = {
   }
 };
 
+/* ---------------- 専用曲デコードのスケジューラ ----------------
+   専用曲6曲の decodeAudioData は1曲でも重く、音声アンロック時や取得
+   完了時にまとめて走るとメインスレッドが長く止まり、戦闘中なら
+   フレームのヒッチ（入力の飲まれ）になる。そこでデコード開始は
+   必ずこのキューを通し、①今戦っている（次に戦う）ボスの曲を最優先、
+   ②開始は1回ずつ・約0.9秒間隔に分散、③戦闘中は今のボスの曲以外の
+   デコードを開始しない（戦闘が終わるまで保留し、自動で再開する）。
+   デコード自体・再生・シンセ版フォールバックの仕様は従来どおり */
+var BGM_DECODE_Q = [], bgmDecodeBusy = false;
+function bgmBossKind(){
+  try{
+    if(typeof G !== "undefined" && G && typeof BOSSES !== "undefined"){
+      var b = BOSSES[G.bossIdx];
+      if(b) return b.kind;
+    }
+  }catch(e){}
+  return "";
+}
+function queueBgmDecode(fn, kind){
+  if(typeof fn !== "function") return;
+  for(var qi = 0; qi < BGM_DECODE_Q.length; qi++) if(BGM_DECODE_Q[qi].fn === fn) return;
+  BGM_DECODE_Q.push({ fn: fn, kind: kind });
+  pumpBgmDecode();
+}
+function pumpBgmDecode(){
+  if(bgmDecodeBusy || typeof AC === "undefined" || !AC) return;
+  if(!BGM_DECODE_Q.length) return;
+  var ck = bgmBossKind();
+  var idx = 0, i;
+  for(i = 0; i < BGM_DECODE_Q.length; i++){ if(BGM_DECODE_Q[i].kind === ck){ idx = i; break; } }
+  var item = BGM_DECODE_Q[idx];
+  var inFight = false;
+  try{ inFight = (typeof G !== "undefined" && G && G.state === "fight"); }catch(e){}
+  if(inFight && item.kind !== ck){
+    /* 戦闘中は他の曲のデコードを始めない。戦闘終了後に再開できるよう、
+       保留のまま一定間隔で見直す */
+    bgmDecodeBusy = true;
+    setTimeout(function(){ bgmDecodeBusy = false; pumpBgmDecode(); }, 1200);
+    return;
+  }
+  BGM_DECODE_Q.splice(idx, 1);
+  bgmDecodeBusy = true;
+  try{ item.fn(); }catch(e){}
+  /* デコードは非同期に進むが、開始だけでも重いので次は少し空ける */
+  setTimeout(function(){ bgmDecodeBusy = false; pumpBgmDecode(); }, 900);
+}
+
 /* ---------------- 九尾専用曲「Beneath The Foxfire Shrine」（AI生成曲・外部ファイル） ----------------
    九尾戦（通常ラン／ボスセレクト／エンドレス等の全出現形態）では、シンセ版の
    神域アレンジ（playDivine の九尾プロファイル）の代わりにこの曲を全編ループで流す
@@ -1852,7 +1904,7 @@ var kyubiRaw = null, kyubiBuf = null, kyubiDecoding = false;
 try{
   fetch("assets/audio/kyubi_theme.mp3").then(function(r){ return r.arrayBuffer(); }).then(function(ab){
     kyubiRaw = ab;
-    if(typeof AC !== "undefined" && AC) kyubiDecode();
+    if(typeof AC !== "undefined" && AC) queueBgmDecode(kyubiDecode, "kyubi");
   }).catch(function(){ kyubiRaw = null; });
 }catch(e){}
 function kyubiDecode(){
@@ -1960,7 +2012,7 @@ var tenguRaw = null, tenguBuf = null, tenguDecoding = false;
 try{
   fetch("assets/audio/tengu_theme.mp3").then(function(r){ return r.arrayBuffer(); }).then(function(ab){
     tenguRaw = ab;
-    if(typeof AC !== "undefined" && AC) tenguDecode();
+    if(typeof AC !== "undefined" && AC) queueBgmDecode(tenguDecode, "tengu");
   }).catch(function(){ tenguRaw = null; });
 }catch(e){}
 function tenguDecode(){
@@ -2068,7 +2120,7 @@ var gashaRaw = null, gashaBuf = null, gashaDecoding = false;
 try{
   fetch("assets/audio/gashadokuro_theme.mp3").then(function(r){ return r.arrayBuffer(); }).then(function(ab){
     gashaRaw = ab;
-    if(typeof AC !== "undefined" && AC) gashaDecode();
+    if(typeof AC !== "undefined" && AC) queueBgmDecode(gashaDecode, "gasha");
   }).catch(function(){ gashaRaw = null; });
 }catch(e){}
 function gashaDecode(){
@@ -2177,7 +2229,7 @@ var nurariRaw = null, nurariBuf = null, nurariDecoding = false;
 try{
   fetch("assets/audio/nurarihyon_theme.mp3").then(function(r){ return r.arrayBuffer(); }).then(function(ab){
     nurariRaw = ab;
-    if(typeof AC !== "undefined" && AC) nurariDecode();
+    if(typeof AC !== "undefined" && AC) queueBgmDecode(nurariDecode, "nurari");
   }).catch(function(){ nurariRaw = null; });
 }catch(e){}
 function nurariDecode(){
@@ -2287,7 +2339,7 @@ var yukiRaw = null, yukiBuf = null, yukiDecoding = false;
 try{
   fetch("assets/audio/yukionna_theme.mp3").then(function(r){ return r.arrayBuffer(); }).then(function(ab){
     yukiRaw = ab;
-    if(typeof AC !== "undefined" && AC) yukiDecode();
+    if(typeof AC !== "undefined" && AC) queueBgmDecode(yukiDecode, "yuki");
   }).catch(function(){ yukiRaw = null; });
 }catch(e){}
 function yukiDecode(){
@@ -2401,7 +2453,7 @@ var fujinRaw = null, fujinBuf = null, fujinDecoding = false;
 try{
   fetch("assets/audio/fujinraijin_theme.mp3").then(function(r){ return r.arrayBuffer(); }).then(function(ab){
     fujinRaw = ab;
-    if(typeof AC !== "undefined" && AC) fujinDecode();
+    if(typeof AC !== "undefined" && AC) queueBgmDecode(fujinDecode, "fujinraijin");
   }).catch(function(){ fujinRaw = null; });
 }catch(e){}
 function fujinDecode(){
@@ -10289,7 +10341,30 @@ function drawBGDirect(){
    どのテーマも背景イラストに馴染む暗め・低彩度に落とし、上面だけ一段明るく
    して「乗れる面」が一目で分かるようにする。ドット絵調に矩形で組み立てる。
    描くのは戦闘中（fight）と撃破演出（down）だけ（draw 側で出し分ける） */
+/* 足場は静止画（風神雷神の雲の漂いだけが時間で動く）なので、ステージ
+   種別ごとに画面全体のオフスクリーンへ焼いて使い回し、毎フレームは
+   1枚の drawImage で済ませる。雲は漂いの位相を約240msごとに量子化し、
+   その間隔でのみ焼き直す（動き自体は従来どおり残る） */
+var PLAT_CACHE = { cv: null, g: null, kind: null, bucket: -1 };
 function drawPlatforms(){
+  var kind = BOSSES[G.bossIdx].kind;
+  var bucket = (kind === "fujinraijin") ? Math.floor(perfNow / 240) : 0;
+  if(!PLAT_CACHE.cv){
+    PLAT_CACHE.cv = document.createElement("canvas");
+    PLAT_CACHE.cv.width = W; PLAT_CACHE.cv.height = H;
+    PLAT_CACHE.g = PLAT_CACHE.cv.getContext("2d");
+  }
+  if(PLAT_CACHE.kind !== kind || PLAT_CACHE.bucket !== bucket){
+    var oldCtx = ctx;
+    ctx = PLAT_CACHE.g;
+    ctx.clearRect(0, 0, W, H);
+    try{ drawPlatformsDirect(); }catch(e){}
+    ctx = oldCtx;
+    PLAT_CACHE.kind = kind; PLAT_CACHE.bucket = bucket;
+  }
+  ctx.drawImage(PLAT_CACHE.cv, 0, 0);
+}
+function drawPlatformsDirect(){
   var kind = BOSSES[G.bossIdx].kind;
   for(var i = 0; i < PLATFORMS.length; i++){
     var pl = PLATFORMS[i], x = pl.x, y = pl.y, w = pl.w, s;
@@ -12120,7 +12195,48 @@ function drawBorrowPhantom(e){
    残量が減るとひびが3段階に増え、割れた直後は全体にひびが走って点滅する。
    崩れている間は薄い残骸だけが残り（本体が無防備だと見て分かる状態）、
    復活の約1秒前からは輪が外から収縮して再構築される */
+/* 結界の殻はモチーフ装飾・ひび・脈動で毎フレーム数十パスを描くため、
+   ボス中心のローカル座標でオフスクリーンへ焼いて使い回す。焼き直しは
+   「状態の署名（残量の段階・被弾の濃さ・割れ・崩壊／復活の経過）が
+   変わったとき」と「前回から50ms以上経ったとき（モチーフの巡回と
+   脈動を動かし続けるため）」だけ。貼り付け位置は毎フレーム現在位置へ
+   合わせるので、ボスの移動には従来どおり追随する */
+var BARRIER_CACHE = {};
 function drawBarrier(e){
+  if(!e || e.isTrash || !(e.barrierMax > 0) || e.dead) return;
+  var cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+  /* 復活時の収縮リング（最大で素の約1.55倍）まで収まる大きさにする */
+  var cw = Math.ceil(e.w * 2.8) + 40, ch = Math.ceil(e.h * 2.4) + 40;
+  var key = e.kind + "|" + cw + "x" + ch;
+  var sig;
+  if((e.barrier || 0) <= 0){
+    sig = "down" + Math.round((e.barrierDownT || 0) * 10);
+  } else {
+    sig = Math.round(clamp(e.barrier / e.barrierMax, 0, 1) * 20) + "|" +
+          Math.round(clamp((e.barrierHitT || 0) / 0.14, 0, 1) * 2) + "|" +
+          ((e.barrierShatterT || 0) > 0 ? 1 : 0);
+  }
+  var ent = BARRIER_CACHE[key];
+  if(!ent){
+    var cnv = document.createElement("canvas");
+    cnv.width = cw; cnv.height = ch;
+    ent = { cv: cnv, g: cnv.getContext("2d"), sig: null, t: -1e9 };
+    BARRIER_CACHE[key] = ent;
+  }
+  if(ent.sig !== sig || perfNow - ent.t >= 50){
+    var oldCtx = ctx;
+    ctx = ent.g;
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.save();
+    ctx.translate(cw / 2 - cx, ch / 2 - cy);
+    try{ drawBarrierDirect(e); }catch(err){}
+    ctx.restore();
+    ctx = oldCtx;
+    ent.sig = sig; ent.t = perfNow;
+  }
+  ctx.drawImage(ent.cv, cx - cw / 2, cy - ch / 2);
+}
+function drawBarrierDirect(e){
   if(!e || e.isTrash || !(e.barrierMax > 0) || e.dead) return;
   var cx = e.x + e.w / 2, cy = e.y + e.h / 2;
   var col = barrierCol(e.kind);
@@ -12783,10 +12899,26 @@ function ebLeafPath(len, wid){
       第3段：＋背景アニメの更新間隔）。負荷が下がれば段階を戻す。
       弾幕・判定・ゲームプレイには触れず、画面表示もしない
    6) 手動「軽量」：内部描画解像度を0.75倍にして拡大表示する
+   7) 足場・結界殻のキャッシュ：足場はステージ種別ごとにオフスクリーンへ
+      焼いて毎フレームは1枚の drawImage で済ませる（風神雷神の雲だけは
+      漂いを保つため約240msごとに焼き直す）。結界の殻はボス中心の
+      ローカル座標でオフスクリーンへ焼き、状態（残量の段階・被弾・
+      割れ・崩壊／復活）が変わらない間は最大50msまで使い回してから
+      ボスの現在位置へ貼る。モチーフの巡回や脈動は50ms刻みの
+      再描画で従来の動きを保つ
+   8) 適応品質の解像度連動：「自動」でも重さが続く場合は内部描画
+      解像度そのものを段階的に落とす（第2段で0.85倍／第3段で0.70倍。
+      座標系・判定・弾幕は従来どおりで、見た目がわずかに柔らかくなる
+      だけ）。負荷が下がって段階が戻れば解像度も戻る
    ========================================================= */
 var PERF = { ema: 0.0167, level: 0, hiT: 0, loT: 0, trailMul: 1, scale: 1, mode: "auto" };
 try{ if(window.localStorage && window.localStorage.getItem("hyakkiHarai.quality") === "light") PERF.mode = "light"; }catch(e){}
-function perfApplyLevel(){ PERF.trailMul = [1, 0.55, 0.3, 0.12][PERF.level]; }
+function perfApplyLevel(){
+  PERF.trailMul = [1, 0.55, 0.3, 0.12][PERF.level];
+  /* 解像度も段階に連動させる（applyQuality はキャンバス寸法が変わる
+     ときだけ再設定するので、段階が変わらない間は無コスト） */
+  if(typeof applyQuality === "function") applyQuality();
+}
 function perfTrack(rawDt){
   PERF.ema = PERF.ema * 0.94 + rawDt * 0.06;
   if(PERF.mode === "light"){ if(PERF.level !== 0){ PERF.level = 0; perfApplyLevel(); } return; }
@@ -12799,7 +12931,9 @@ function perfTrack(rawDt){
   } else { PERF.hiT = 0; PERF.loT = 0; }
 }
 function applyQuality(){
-  var s = (PERF.mode === "light") ? 0.75 : 1;
+  /* 「軽量」は常時0.75倍。「自動」は適応品質の段階に連動し、重さが
+     続くときだけ 0.85倍（第2段）／0.70倍（第3段）へ落とす */
+  var s = (PERF.mode === "light") ? 0.75 : [1, 1, 0.85, 0.7][PERF.level];
   PERF.scale = s;
   var w = Math.round(W * s), h = Math.round(H * s);
   if(cv.width !== w || cv.height !== h){
@@ -14800,11 +14934,16 @@ function loop(ts){
   if(frameStats.frames % 120 === 0) frameStats.worst = rawFrame;
   /* ジャンプ押下キューの失効管理：updatePlayer が消費しないまま（タイトルや
      カットイン等の間）0.5秒を超えた押下は捨て、古い押下が戦闘開始直後に
-     暴発しないようにする。戦闘中は updatePlayer が同フレームで消費する */
-  if(jumpQueued){ jumpQueueAge += rawFrame; if(jumpQueueAge > 0.5){ jumpQueued = false; jumpQueueAge = 0; } }
-  /* アクション押下バッファの失効管理：ジャンプキューと同じく実時間で加齢し、
+     暴発しないようにする。戦闘中は updatePlayer が同フレームで消費する。
+     加齢は1フレーム最大約34msまでに抑える：長いフレーム（ヒッチ）が
+     1回起きただけで、その間に押したジャンプ／アクションの押下が丸ごと
+     失効して「押したのに反応しない」ことのないようにするため。古い
+     押下の暴発防止という目的は、通常フレームでの加齢で従来どおり果たす */
+  var inputAge = Math.min(rawFrame, 0.034);
+  if(jumpQueued){ jumpQueueAge += inputAge; if(jumpQueueAge > 0.5){ jumpQueued = false; jumpQueueAge = 0; } }
+  /* アクション押下バッファの失効管理：ジャンプキューと同じく加齢し、
      ACT_BUFFER を超えた押下は捨てる（古い押下が後で暴発しないように） */
-  for(var abK in actBuf){ if(actBuf[abK] > 0){ actBuf[abK] -= rawFrame; if(actBuf[abK] < 0) actBuf[abK] = 0; } }
+  for(var abK in actBuf){ if(actBuf[abK] > 0){ actBuf[abK] -= inputAge; if(actBuf[abK] < 0) actBuf[abK] = 0; } }
   syncTouchVisibility();
   /* ロングフレーム対策：以前は dt を 0.033 秒で打ち切り、超えた分を捨てて
      いたため、弾幕が濃くフレームが伸びる場面ほどゲーム内時間が実時間から
