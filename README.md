@@ -6,7 +6,7 @@ A Japanese yokai pixel-art bullet-hell boss rush. Break the barrier, exorcise th
 
 ## Play / 遊ぶ
 
-GitHub Pages で公開中（ブラウザでそのまま遊べます）。
+▶ **Play now / 今すぐ遊ぶ: https://ayaya256.github.io/hyakki-harai/**（ブラウザでそのまま遊べます）
 
 ## Author / 作者
 
