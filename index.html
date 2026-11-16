@@ -5424,9 +5424,40 @@ cv.addEventListener("pointerdown", function(e){
 
 /* ---------------- 弾・演出 ---------------- */
 var MAX_EB = 340;
-/* 敵弾の全体速度倍率：弾幕のスピードを全体的に少し下げた（全ての敵弾は spawnEB を通るため、ここで一括して効く）。
-   ハードの上乗せ（×1.07）とエンドレス周回の上乗せは、この倍率の上に重なる */
-var EB_SPEED_MUL = 0.92;
+/* 敵弾の全体速度倍率：全ての敵弾は spawnEB を通るため、ここで一括して効く。
+   ハードの上乗せ（×1.07）とエンドレス周回の上乗せは、この倍率の上に重なる。
+   弾幕バランス試作（2026-11-16）：生成数を全体に×0.6へ減らす代わりに、
+   速度を従来の 0.92 から +20% の 1.104 へ上げた（実プレイ判定で戻す場合あり） */
+var EB_SPEED_MUL = 1.104;
+/* 通常弾幕の生成数倍率（試作）：×0.6・四捨五入・最小1発を「パターン単位」で
+   適用する。spawnEB 自体は間引かない（呼ばれれば必ず1発出るので、戦闘開始
+   直後の最初の弾や単発技の弾が消えることはない）。本数の削減は各パターンの
+   発射側で thinCount() をループ回数・同時発射数そのものに掛けて行うため、
+   同一パターンは実行ごとに揺れず、毎回必ず同じ発射数になる（決定的）。
+   旧方式（spawnEB 内の全域アキュムレータによる間引き）は、
+   最初の通常弾が必ず消える／単発技が0発になり得る／実行ごとに生成数が
+   揺れる（天狗F2二重リングが40→24と40→23など）ため廃止した。
+   各パターンのコメントに残る本数（例：27方向）は間引き前の元の本数で、
+   実際の発射数は thinCount 適用後の本数になる。
+   対象外（本数を変えない）：予告系ハザード（結晶・氷柱・つらら落とし・
+   炎斬り・雷斬り・髑髏の群れ／髑髏の雨・地波・風雷双渦。多くは spawnEB を
+   通らない）と構造数（九尾の尾の同時攻撃数、分裂火球の親弾3発）。
+   雑魚妖怪の弾と分裂の子弾は通常弾幕として×0.6の対象に含む。雪女の
+   「氷の欠片の雨」も通常弾として対象。弾の上限・攻撃間隔・ボスHP・
+   結界・判定には触らない */
+var EB_COUNT_MUL = 0.6;
+function thinCount(n){
+  if(n <= 0) return 0;
+  return Math.max(1, Math.round(n * EB_COUNT_MUL));
+}
+/* 扇・放射・落下列の「元の弾の並び」から thinCount 本だけを等間隔に残すための
+   インデックス写像：k 本目（0始まり）に対応する元の通し番号を返す。
+   元の角度・位置の subset になるため、パターンの形（広がり・間隔）は
+   そのままに本数だけが減る。両端（最初と最後）は必ず残る */
+function thinIdx(k, N, n){
+  if(n <= 1 || N <= 1) return 0;
+  return Math.round(k * (N - 1) / (n - 1));
+}
 function spawnEB(x, y, vx, vy, o){
   var isLun = (typeof G !== "undefined" && G && G.lunaticMode);
   var cap = (isLun ? 620 : ((typeof G !== "undefined" && G && G.hardMode) ? 560 : MAX_EB))
@@ -5445,11 +5476,13 @@ function spawnEB(x, y, vx, vy, o){
     var sdx = (player.x + player.w / 2) - x, sdy = (player.y + player.h / 2) - y;
     if(sdx * vx + sdy * vy < 0) return;
   }
+  /* 生成数の間引きは spawnEB では行わない（×0.6は発射側のパターン単位で
+     thinCount により適用済み）。ここを通る弾は必ず1発生成される */
   /* ハードモード：弾速を少し上げ、通常弾は確率で斜めにもう1発増やして弾幕を濃くする。
      ルナティック：弾速はさらに上がり（×1.18）、追加弾の確率は60%まで上がるうえ、
      追加が当たると40%で反対側にももう1発出て三方向に広がる。弾の上限も620まで増える。
      エンドレス（ボスラッシュ）：周回が進むほど弾速・弾の上限・追加弾の確率がさらに上がる。
-     全モード共通で EB_SPEED_MUL を掛け、弾速全体を少し落としている */
+     全モード共通で EB_SPEED_MUL を掛ける（試作で 0.92→1.104 に引き上げ済み） */
   var hs = EB_SPEED_MUL
          * (isLun ? 1.18 : ((typeof G !== "undefined" && G && G.hardMode) ? 1.07 : 1))
          * ((typeof endlessSpdMul === "function") ? endlessSpdMul() : 1);
@@ -6579,10 +6612,14 @@ function castSkullSwarm(e){
   e.skullLeft = 0; e.skullT = 0; e.skullSpawned = 0; e.skullGround = null;
   SFX.warn();
   floatText(c.x - 44, e.y - 24, "髑髏の群れ", "#efe9da", 17, 1.25);
-  /* 直線の骨扇と地面の骨は、従来どおり少しだけ併用する（骨は全て直線で飛ぶ） */
+  /* 直線の骨扇と地面の骨は、従来どおり少しだけ併用する（骨は全て直線で飛ぶ）。
+     骨扇は通常弾幕として×0.6対象（7→4発、元の角度の subset）。
+     髑髏の群れ本体（9個の出現数）は予告系ハザードとして無変更 */
   var fb = aimAt(e, 238);
-  for(var i = 0; i < 7; i++){
-    var fa = fb.a + (i - 3) * 0.17;
+  var fanN = thinCount(7);
+  for(var i = 0; i < fanN; i++){
+    var fi = thinIdx(i, 7, fanN);
+    var fa = fb.a + (fi - 3) * 0.17;
     spawnEB(c.x - 30, c.y - 20, Math.cos(fa) * 238, Math.sin(fa) * 238, { color:"#efe9da", kind:"bone", r:6, life:5 });
   }
   addHazard(player.x + player.w/2 - 24, 48, "bone", "#efe9da");
@@ -7393,11 +7430,12 @@ function updateTengu(e, dt){
       var stp = e.stormStep; e.stormStep++;
       var sc = bossCenter(e);
       if(stp === 9){
-        /* 締めの放射バースト：27方向に羽根を放つ */
+        /* 締めの放射バースト：27方向に羽根を放つ（×0.6で16方向） */
         SFX.enemy("wind");
         var foff9 = rnd(0, 6.28);
-        for(var fb = 0; fb < 27; fb++){
-          var fba = foff9 + (fb / 27) * Math.PI * 2;
+        var fbN = thinCount(27);
+        for(var fb = 0; fb < fbN; fb++){
+          var fba = foff9 + (fb / fbN) * Math.PI * 2;
           spawnEB(sc.x, sc.y - 6, Math.cos(fba) * 186, Math.sin(fba) * 186, { color:"#e8e2d2", kind:"feather", r:5, grav:90 });
         }
         burst(sc.x, sc.y, "#9fe8ff", 10, 150);
@@ -7407,8 +7445,9 @@ function updateTengu(e, dt){
         e.stormWave++;
         SFX.enemy("wind");
         var wdir = (e.stormWave % 2 === 1) ? 1 : -1;
-        for(var w2 = 0; w2 < 13; w2++)
-          spawnEB(30 + w2 * 72 + rnd(-16, 16), -16 - rnd(0, 30), wdir * rnd(50, 110), rnd(215, 265), { color:"#e8e2d2", kind:"feather", r:5, life:5 });
+        var wN = thinCount(13);
+        for(var w2 = 0; w2 < wN; w2++)
+          spawnEB(30 + thinIdx(w2, 13, wN) * 72 + rnd(-16, 16), -16 - rnd(0, 30), wdir * rnd(50, 110), rnd(215, 265), { color:"#e8e2d2", kind:"feather", r:5, life:5 });
         /* 嵐の中盤（3波目）でもう一度グライドを入れることがある */
         if(e.stormWave === 3 && Math.random() < 0.6 && (e.stormGlideT || 0) <= 0){
           var gdir3 = sc.x < W / 2 ? 1 : -1;
@@ -7416,11 +7455,13 @@ function updateTengu(e, dt){
           e.stormGlideVx = gdir3 * rnd(400, 470); e.stormGlideT = 1.35;
         }
       } else {
-        /* 波の間の狙撃：羽根扇8方向（発射時点で巫女を狙う。弾速は通常の扇と同じ） */
+        /* 波の間の狙撃：羽根扇8方向（発射時点で巫女を狙う。弾速は通常の扇と同じ。
+           ×0.6で5方向、元の角度の subset） */
         SFX.enemy("wind");
         var aimF = aimAt(e, 252);
-        for(var ff = 0; ff < 8; ff++){
-          var ffa = aimF.a + (ff - 3.5) * 0.19;
+        var ffN = thinCount(8);
+        for(var ff = 0; ff < ffN; ff++){
+          var ffa = aimF.a + (thinIdx(ff, 8, ffN) - 3.5) * 0.19;
           spawnEB(sc.x, sc.y - 4, Math.cos(ffa) * 252, Math.sin(ffa) * 252, { color:"#e8e2d2", kind:"feather", r:5 });
         }
       }
@@ -7448,8 +7489,9 @@ function updateTengu(e, dt){
         if(Math.random() < 0.25) gdir0 = -gdir0;
         e.stormGlideVx = gdir0 * rnd(400, 470); e.stormGlideT = 1.35;
       }
-      for(var bi = 0; bi < 14; bi++){
-        var ba = (bi / 14) * Math.PI * 2 + rnd(0, 0.2);
+      var biN = thinCount(14);
+      for(var bi = 0; bi < biN; bi++){
+        var ba = (bi / biN) * Math.PI * 2 + rnd(0, 0.2);
         spawnEB(c.x, c.y - 6, Math.cos(ba) * 168, Math.sin(ba) * 168, { color:"#e8e2d2", kind:"feather", r:5, grav:120 });
       }
       floatText(c.x - 40, e.y - 24, "大羽根嵐", "#9fe8ff", 17, 1.2);
@@ -7459,8 +7501,9 @@ function updateTengu(e, dt){
       SFX.enemy("wind");
       /* 放射リング（二重リング）：第1形態は外側16方向＋内側11方向。
          第弐形態では密度が上がり、外側22方向＋内側18方向になる。
-         内側は遅いので、外側を抜けた後にもう一度避ける読みが必要になる */
-      var ringOut = e.form2 ? 22 : 16, ringIn = e.form2 ? 18 : 11;
+         内側は遅いので、外側を抜けた後にもう一度避ける読みが必要になる。
+         ×0.6適用後：第1形態は10＋7、第弐形態は13＋11（計24）で毎回固定 */
+      var ringOut = thinCount(e.form2 ? 22 : 16), ringIn = thinCount(e.form2 ? 18 : 11);
       var off = e.t * 0.7;
       for(var i=0;i<ringOut;i++){
         var a = off + (i / ringOut) * Math.PI * 2;
@@ -7472,11 +7515,13 @@ function updateTengu(e, dt){
       }
       e.atkT = rnd(1.15, 1.45);
     } else if(r < 0.62){
-      /* 風の刃：狙いの扇8方向＋速射1発（放射の合間に残す直接の圧） */
+      /* 風の刃：狙いの扇8方向＋速射1発（放射の合間に残す直接の圧）。
+         扇は×0.6で5方向（元の角度の subset）、速射1発は単発として不変 */
       SFX.enemy("wind");
       var base = aimAt(e, 248);
-      for(var f=0;f<8;f++){
-        var fa = base.a + (f - 3.5) * 0.2;
+      var bladeN = thinCount(8);
+      for(var f=0;f<bladeN;f++){
+        var fa = base.a + (thinIdx(f, 8, bladeN) - 3.5) * 0.2;
         spawnEB(c.x - 20, c.y, Math.cos(fa)*248, Math.sin(fa)*248, { color:"#9fe8ff", kind:"blade", r:7 });
       }
       var b2 = aimAt(e, 305);
@@ -7485,8 +7530,8 @@ function updateTengu(e, dt){
     } else if(r < 0.80){
       SFX.enemy("wind");
       /* 羽ばらまき：全方位へ放射状に散らし、重力で舞い落ちる。
-         第1形態は14方向、第弐形態では20方向に増える */
-      var featherN = e.form2 ? 20 : 14;
+         第1形態は14方向、第弐形態では20方向に増える（×0.6で8／12方向） */
+      var featherN = thinCount(e.form2 ? 20 : 14);
       var foff = rnd(0, 6.28);
       for(var j=0;j<featherN;j++){
         var fa2 = foff + (j / featherN) * Math.PI * 2;
@@ -7501,8 +7546,8 @@ function updateTengu(e, dt){
     } else {
       SFX.enemy("wind");
       /* 大放射リング：第1形態は19方向、第弐形態では27方向。
-         撃つたびに角度が回るので同じ避け方が続かない */
-      var bigN = e.form2 ? 27 : 19;
+         撃つたびに角度が回るので同じ避け方が続かない（×0.6で11／16方向） */
+      var bigN = thinCount(e.form2 ? 27 : 19);
       for(var k=0;k<bigN;k++){
         var aa = (k / bigN) * Math.PI * 2 + e.t * 1.3;
         spawnEB(c.x, c.y, Math.cos(aa)*192, Math.sin(aa)*192, { color:"#9fe8ff", kind:"orb", r:5 });
@@ -7781,10 +7826,13 @@ function updateIcePillars(dt){
   if(icePillars.length) iceActiveSeen.pillar = true;
   else if(iceActiveSeen.pillar){ iceActiveSeen.pillar = false; iceEndT.pillar = (typeof G !== "undefined" && G) ? G.runTime : 0; }
 }
-/* 氷の欠片の雨：画面全体に氷片をn個降らせる（絶対零度で1波だけ使う） */
+/* 氷の欠片の雨：画面全体に氷片をn個降らせる（絶対零度で1波だけ使う）。
+   これは通常弾なので×0.6対象（14個→8個、元の落下位置の subset） */
 function spawnIceRain(n){
+  var n0 = n;
+  n = thinCount(n);
   for(var i = 0; i < n; i++)
-    spawnEB(rnd(ARENA_L + 16, ARENA_R - 16), -12 - i * 14, rnd(-24, 24), rnd(150, 210), { color:"#dff3ff", kind:"snow", r:4, life:7 });
+    spawnEB(rnd(ARENA_L + 16, ARENA_R - 16), -12 - thinIdx(i, n0, n) * 14, rnd(-24, 24), rnd(150, 210), { color:"#dff3ff", kind:"snow", r:4, life:7 });
   SFX.enemy("snow");
 }
 /* 氷の槍の雪降らし：細い氷の槍が画面全体に速く降り注ぎ、狙いの槍も2発添える。
@@ -7792,12 +7840,13 @@ function spawnIceRain(n){
    槍化して速度を上げ（落下 vy 215〜275／狙い 222→320）、寿命も短くした。
    落下する槍は地面に触れると砕けて消える（groundKill） */
 function spawnSpearFall(e, c){
-  for(var i = 0; i < 10; i++)
-    spawnEB(rnd(ARENA_L+16, ARENA_R-16), -12 - i*18, rnd(-14,14), rnd(215,275), { color:"#bfe6ff", kind:"icespear", r:5, life:4, groundKill:true });
+  /* 落下する槍は×0.6対象（10→6本、元の落下位置の subset）。
+     狙いの槍は同時2発→thinCount(2)＝1発（狙い本体のみ残す） */
+  var spN = thinCount(10);
+  for(var i = 0; i < spN; i++)
+    spawnEB(rnd(ARENA_L+16, ARENA_R-16), -12 - thinIdx(i, 10, spN)*18, rnd(-14,14), rnd(215,275), { color:"#bfe6ff", kind:"icespear", r:5, life:4, groundKill:true });
   var bb0 = aimAt(e, 320);
   spawnEB(c.x, c.y, bb0.vx, bb0.vy, { color:"#dff3ff", kind:"icespear", r:6, life:3 });
-  var bb0b = bb0.a + 0.18;
-  spawnEB(c.x, c.y, Math.cos(bb0b)*320, Math.sin(bb0b)*320, { color:"#dff3ff", kind:"icespear", r:6, life:3 });
 }
 /* ---------------- 雪女の通常攻撃「つらら落とし」 ----------------
    画面上空から長く尖ったつららが真っ直ぐ落ちてくる通常攻撃（絶対零度の中だけの
@@ -8043,8 +8092,9 @@ function updateYuki(e, dt){
     if(e.burstT <= 0 && ebullets.length < MAX_EB - 6){
       SFX.enemy("snow");
       e.burstT = 0.086; e.emitA += 0.72;
-      for(var s=0;s<4;s++){
-        var ang = e.emitA + s * (Math.PI * 2 / 4);
+      var spN2 = thinCount(4);
+      for(var s=0;s<spN2;s++){
+        var ang = e.emitA + s * (Math.PI * 2 / spN2);
         spawnEB(cc.x, cc.y, Math.cos(ang)*250, Math.sin(ang)*250, { color:"#8fd0ff", kind:"icespear", r:5, life:3.5 });
       }
     }
@@ -8137,10 +8187,11 @@ function updateYuki(e, dt){
     } else {
       SFX.enemy("snow");
       /* 扇形：氷の槍10発。広がりは同じまま、槍化で速度を192→280に上げ、
-         寿命も短くして画面に残り続けないようにした。
+         寿命も短くして画面に残り続けないようにした（×0.6で6発、元の角度の subset）。
          結晶攻撃は上の専用タイマーでほとんど常時出す */
-      for(var j=0;j<10;j++){
-        var a3 = Math.PI * (0.20 + j * 0.0569);
+      var fanN2 = thinCount(10);
+      for(var j=0;j<fanN2;j++){
+        var a3 = Math.PI * (0.20 + thinIdx(j, 10, fanN2) * 0.0569);
         spawnEB(c.x, c.y, Math.cos(a3)*280, Math.sin(a3)*280, { color:"#8fd0ff", kind:"icespear", r:5, life:3 });
       }
       e.atkT = rnd(0.98, 1.22);
@@ -8179,21 +8230,24 @@ function updateGasha(e, dt){
       SFX.enemy("bone");
       /* 骨の放射リング：全方位16方向に骨を放つ。骨は重力を受けず、全て
          一直線に等速で飛ぶ。内側に角度をずらした10方向の遅いリングも
-         重ねて二重にする */
+         重ねて二重にする（×0.6で外10＋内6） */
       var goff = e.t * 0.6;
-      for(var i=0;i<16;i++){
-        var a = goff + (i / 16) * Math.PI * 2;
+      var gOut = thinCount(16), gIn = thinCount(10);
+      for(var i=0;i<gOut;i++){
+        var a = goff + (i / gOut) * Math.PI * 2;
         spawnEB(c.x - 30, c.y - 30, Math.cos(a)*172, Math.sin(a)*172, { color:"#efe9da", kind:"bone", r:6 });
       }
-      for(var i2=0;i2<10;i2++){
-        var a2 = goff + 0.31 + (i2 / 10) * Math.PI * 2;
+      for(var i2=0;i2<gIn;i2++){
+        var a2 = goff + 0.31 + (i2 / gIn) * Math.PI * 2;
         spawnEB(c.x - 30, c.y - 30, Math.cos(a2)*112, Math.sin(a2)*112, { color:"#efe9da", kind:"bone", r:5 });
       }
       e.atkT = rnd(1.5, 1.85);
     } else if(r < 0.66){
       SFX.enemy("bone");
-      /* 狙い骨 連射：5連射（間隔と速度は下の burst 処理で調整） */
-      e.mode = "burst"; e.burst = 5; e.burstT = 0;
+      /* 狙い骨 連射：5連射（間隔と速度は下の burst 処理で調整）。
+         連射数は×0.6対象（5→3射）。1射あたりの2発（狙い＋ずらし）は
+         そのままなので、パターン総数は10→6になる */
+      e.mode = "burst"; e.burst = thinCount(5); e.burstT = 0;
       e.atkT = rnd(1.7, 2.0);
     } else if(r < 0.82){
       /* 地面から骨（3か所） */
@@ -8209,13 +8263,16 @@ function updateGasha(e, dt){
     } else {
       SFX.enemy("bone");
       /* 大放射リング：17方向に速い骨を放つ（撃つたびに角度が回る。全て直線で
-         飛ぶ）＋骨の雨6個（真上からまっすぐ落ちる）で上下から挟む */
-      for(var k=0;k<17;k++){
-        var aa = (k / 17) * Math.PI * 2 + e.t * 1.15;
+         飛ぶ）＋骨の雨6個（真上からまっすぐ落ちる）で上下から挟む
+         （×0.6でリング10方向＋雨4個、雨は元の落下位置の subset） */
+      var bigN2 = thinCount(17);
+      for(var k=0;k<bigN2;k++){
+        var aa = (k / bigN2) * Math.PI * 2 + e.t * 1.15;
         spawnEB(c.x - 30, c.y - 30, Math.cos(aa)*196, Math.sin(aa)*196, { color:"#efe9da", kind:"bone", r:6 });
       }
-      for(var j2=0;j2<6;j2++)
-        spawnEB(rnd(ARENA_L+20, ARENA_R-20), -14 - j2*10, rnd(-15,15), rnd(140,195), { color:"#efe9da", kind:"bone", r:6, life:7 });
+      var rainN = thinCount(6);
+      for(var j2=0;j2<rainN;j2++)
+        spawnEB(rnd(ARENA_L+20, ARENA_R-20), -14 - thinIdx(j2, 6, rainN)*10, rnd(-15,15), rnd(140,195), { color:"#efe9da", kind:"bone", r:6, life:7 });
       e.atkT = rnd(1.55, 1.9);
     }
   }
@@ -8253,13 +8310,15 @@ function updateFujin(e, dt){
     SFX.enemy("wind");
     if(Math.random() < 0.7){
       var base = aimAt(e, 264);
-      for(var i=0;i<6;i++){
-        var a = base.a + (i - 2.5) * 0.19;
+      var fuN = thinCount(6);
+      for(var i=0;i<fuN;i++){
+        var a = base.a + (thinIdx(i, 6, fuN) - 2.5) * 0.19;
         spawnEB(c.x - 16, c.y, Math.cos(a)*264, Math.sin(a)*264, { color:"#a8e063", kind:"blade", r:7 });
       }
     } else {
-      for(var j=0;j<11;j++){
-        var aa = (j / 11) * Math.PI * 2 + e.t;
+      var fuR = thinCount(11);
+      for(var j=0;j<fuR;j++){
+        var aa = (j / fuR) * Math.PI * 2 + e.t;
         spawnEB(c.x, c.y, Math.cos(aa)*152, Math.sin(aa)*152, { color:"#a8e063", kind:"orb", r:5 });
       }
     }
@@ -8481,8 +8540,9 @@ function updateRaijin(e, dt){
     } else if(r < 0.82){
       SFX.enemy("thunder");
       var c = bossCenter(e);
-      for(var i=0;i<9;i++){
-        var a = Math.PI * (0.15 + i * 0.0901);
+      var raN = thinCount(9);
+      for(var i=0;i<raN;i++){
+        var a = Math.PI * (0.15 + thinIdx(i, 9, raN) * 0.0901);
         spawnEB(c.x, c.y, Math.cos(a)*218, Math.sin(a)*218, { color:"#ffe45c", kind:"orb", r:6 });
       }
       e.atkT = rnd(1.05, 1.35);
@@ -8490,8 +8550,9 @@ function updateRaijin(e, dt){
       SFX.enemy("thunder");
       var c2 = bossCenter(e);
       var bb = aimAt(e, 288);
-      for(var k=0;k<4;k++){
-        var a2 = bb.a + (k - 1.5) * 0.2;
+      var raN2 = thinCount(4);
+      for(var k=0;k<raN2;k++){
+        var a2 = bb.a + (thinIdx(k, 4, raN2) - 1.5) * 0.2;
         spawnEB(c2.x, c2.y, Math.cos(a2)*288, Math.sin(a2)*288, { color:"#fff2a0", kind:"orb", r:6 });
       }
       e.atkT = rnd(1.0, 1.3);
@@ -8582,22 +8643,26 @@ function kyubiAttackOne(e, t, slot){
                   第弐形態では「連斬」化：斬撃9→12回 */
     if(e.form2) castEnzan(e, 12, 0.10, "炎斬り・連斬");
     else castEnzan(e);
-  } else if(t === 1){ /* 尾2 扇形17方向 */
+  } else if(t === 1){ /* 尾2 扇形17方向（×0.6で10方向、元の角度の subset） */
     var base = aimAt(e, 285);
-    for(var i=0;i<17;i++){
-      var a = base.a + (i - 8) * 0.13;
+    var t1N = thinCount(17);
+    for(var i=0;i<t1N;i++){
+      var a = base.a + (thinIdx(i, 17, t1N) - 8) * 0.13;
       spawnEB(c.x - 30, c.y - 6, Math.cos(a)*285, Math.sin(a)*285, { color:col, kind:"orb", r:6 });
     }
-  } else if(t === 3){ /* 尾4 火の雨：32発＋3発ごとの追加弾で計43発 */
-    if(slot === 0){ e.burst = 32; e.burstT = 0; } else if(slot === 1){ e.burst2 = 32; e.burstT2 = 0; } else { e.burst3 = 32; e.burstT3 = 0; }
-  } else if(t === 4){ /* 尾5 追尾火球×7（追尾の旋回も少し強化） */
-    spawnEB(c.x - 30, c.y - 50, -150, -140, { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
-    spawnEB(c.x - 30, c.y - 38, -160, -118, { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
-    spawnEB(c.x - 30, c.y - 26, -172, -84, { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
-    spawnEB(c.x - 30, c.y - 10, -178, -28, { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
-    spawnEB(c.x - 30, c.y + 6, -178, 28, { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
-    spawnEB(c.x - 30, c.y + 22, -172, 84, { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
-    spawnEB(c.x - 30, c.y + 34, -160, 118, { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
+  } else if(t === 3){ /* 尾4 火の雨：元の総数は32発＋3発ごとの追加弾で計43発。
+                         ×0.6は総数に適用し thinCount(43)＝26発の単発雨にする
+                         （tick 側は追加弾なしの1発ずつ。毎回必ず26発で決定的） */
+    if(slot === 0){ e.burst = thinCount(43); e.burstT = 0; } else if(slot === 1){ e.burst2 = thinCount(43); e.burstT2 = 0; } else { e.burst3 = thinCount(43); e.burstT3 = 0; }
+  } else if(t === 4){ /* 尾5 追尾火球×7（追尾の旋回も少し強化）。
+                         ×0.6で4発（元の速度列の subset：通し番号0,2,4,6） */
+    var hvV = [[-150,-140],[-160,-118],[-172,-84],[-178,-28],[-178,28],[-172,84],[-160,118]];
+    var hvY = [-50,-38,-26,-10,6,22,34];
+    var hvN = thinCount(7);
+    for(var hi=0;hi<hvN;hi++){
+      var hj = thinIdx(hi, 7, hvN);
+      spawnEB(c.x - 30, c.y + hvY[hj], hvV[hj][0], hvV[hj][1], { color:col, kind:"orb", r:7, homing:2.3, life:4.0 });
+    }
   } else if(t === 5){ /* 尾6 火の柱×6 */
     addHazard(player.x + player.w/2 - 26, 52, "pillar", col);
     addHazard(clamp(player.x + rnd(-180,180), ARENA_L+10, ARENA_R-62), 52, "pillar", col);
@@ -8606,10 +8671,14 @@ function kyubiAttackOne(e, t, slot){
     addHazard(clamp(player.x + rnd(-540,540), ARENA_L+10, ARENA_R-62), 52, "pillar", col);
     addHazard(clamp(player.x + rnd(-660,660), ARENA_L+10, ARENA_R-62), 52, "pillar", col);
     SFX.warn();
-  } else if(t === 6){ /* 尾7 炎の輪（38方向・下側に隙間あり） */
-    for(var j=0;j<38;j++){
-      var aa = (j / 38) * Math.PI * 2;
-      if(j === 8 || j === 9 || j === 10 || j === 11) continue; /* 下側の隙間 */
+  } else if(t === 6){ /* 尾7 炎の輪（38方向・下側に隙間あり）。
+                         ×0.6で通し番号の subset 23個ぶんを走査し、下側の隙間
+                         （元の通し番号8〜11）はそのまま空ける（実弾34→21発） */
+    var t6N = thinCount(38);
+    for(var j=0;j<t6N;j++){
+      var jj = thinIdx(j, 38, t6N);
+      var aa = (jj / 38) * Math.PI * 2;
+      if(jj === 8 || jj === 9 || jj === 10 || jj === 11) continue; /* 下側の隙間 */
       spawnEB(c.x, c.y - 4, Math.cos(aa)*168, Math.sin(aa)*168, { color:col, kind:"orb", r:6 });
     }
   } else if(t === 7){ /* 尾8 分裂火球×3 */
@@ -8633,7 +8702,9 @@ function kyubiAttackTickOne(e, t, slot, dt){
   var col = TAIL_INFO[t].color;
   if(slot === 0) e.burstT -= dt; else if(slot === 1) e.burstT2 -= dt; else e.burstT3 -= dt;
   var burstT = (slot === 0) ? e.burstT : ((slot === 1) ? e.burstT2 : e.burstT3);
-  if(t === 2){ /* 尾3 渦巻き（2方向・高速） */
+  if(t === 2){ /* 尾3 渦巻き（2方向・高速）。同時発射数は×0.6対象で
+                  thinCount(2)＝1発：回転角の進み方は従来どおりで、1本腕の
+                  渦巻きとして毎ティック1発ずつ放つ */
     if(burstT <= 0){
       SFX.enemy("fire");
       var ea;
@@ -8641,18 +8712,19 @@ function kyubiAttackTickOne(e, t, slot, dt){
       else if(slot === 1){ e.burstT2 = 0.045; e.emitA2 += 0.58; ea = e.emitA2; }
       else { e.burstT3 = 0.045; e.emitA3 += 0.58; ea = e.emitA3; }
       spawnEB(c.x - 10, c.y - 4, Math.cos(ea)*176, Math.sin(ea)*176, { color:col, kind:"orb", r:5 });
-      spawnEB(c.x - 10, c.y - 4, Math.cos(ea + Math.PI)*176, Math.sin(ea + Math.PI)*176, { color:col, kind:"orb", r:5 });
     }
-  } else if(t === 3){ /* 尾4 火の雨 */
+  } else if(t === 3){ /* 尾4 火の雨：総数は発動側で thinCount(43)＝26 に
+                         間引き済み。ここでは1ティック1発だけ落とす
+                         （元の「3発ごとの追加弾」は総数側に織り込み済み） */
     var burst = (slot === 0) ? e.burst : ((slot === 1) ? e.burst2 : e.burst3);
     if(burst > 0 && burstT <= 0){
       SFX.enemy("fire");
       burst--;
       if(slot === 0){ e.burst = burst; e.burstT = 0.06; } else if(slot === 1){ e.burst2 = burst; e.burstT2 = 0.06; } else { e.burst3 = burst; e.burstT3 = 0.06; }
       spawnEB(rnd(ARENA_L+16, ARENA_R-16), -12, rnd(-14,14), rnd(185,240), { color:col, kind:"orb", r:6, life:6 });
-      if(burst % 3 === 0) spawnEB(rnd(ARENA_L+16, ARENA_R-16), -12, rnd(-14,14), rnd(185,240), { color:col, kind:"orb", r:6, life:6 });
     }
-  } else if(t === 8){ /* 尾9 乱舞：21方向×5波。第弐形態では7波に増え、間隔も詰まる（狐火乱舞の強化） */
+  } else if(t === 8){ /* 尾9 乱舞：21方向×5波。第弐形態では7波に増え、間隔も詰まる（狐火乱舞の強化）。
+                         波数は構造として保ち、1波の方向数を×0.6（21→13）にする */
     var burst8 = (slot === 0) ? e.burst : ((slot === 1) ? e.burst2 : e.burst3);
     var ranbuMax = e.form2 ? 7 : 5;
     if(burst8 < ranbuMax && burstT <= 0){
@@ -8661,8 +8733,9 @@ function kyubiAttackTickOne(e, t, slot, dt){
       var ranbuIv = e.form2 ? 0.22 : 0.27;
       if(slot === 0){ e.burst = burst8; e.burstT = ranbuIv; } else if(slot === 1){ e.burst2 = burst8; e.burstT2 = ranbuIv; } else { e.burst3 = burst8; e.burstT3 = ranbuIv; }
       var off = burst8 * 0.18;
-      for(var j=0;j<21;j++){
-        var aa = off + (j / 21) * Math.PI * 2;
+      var rbN = thinCount(21);
+      for(var j=0;j<rbN;j++){
+        var aa = off + (j / rbN) * Math.PI * 2;
         spawnEB(c.x, c.y - 4, Math.cos(aa)*198, Math.sin(aa)*198, { color:col, kind:"orb", r:6 });
       }
     }
@@ -8728,8 +8801,9 @@ function updateNurari(e, dt){
       if(!d.fired && d.t >= 0.65){
         d.fired = true;
         SFX.enemy("nurari");
-        for(var da = 0; da < 8; da++){
-          var aa = (da / 8) * Math.PI * 2 + d.t;
+        var daN = thinCount(8);
+        for(var da = 0; da < daN; da++){
+          var aa = (da / daN) * Math.PI * 2 + d.t;
           spawnEB(d.x + e.w/2, d.y + e.h/2, Math.cos(aa)*150, Math.sin(aa)*150, { color:"#c9a6ff", kind:"orb", r:5 });
         }
       }
@@ -8785,8 +8859,9 @@ function updateNurari(e, dt){
     if(e.burstT <= 0 && ebullets.length < MAX_EB - 6){
       SFX.enemy("nurari");
       e.burstT = 0.085; e.emitA += 0.62;
-      for(var s = 0; s < 4; s++){
-        var ang = e.emitA + s * (Math.PI * 2 / 4);
+      var nsN = thinCount(4);
+      for(var s = 0; s < nsN; s++){
+        var ang = e.emitA + s * (Math.PI * 2 / nsN);
         spawnEB(c.x, c.y, Math.cos(ang)*138, Math.sin(ang)*138, { color:"#c9a6ff", kind:"orb", r:5 });
       }
     }
@@ -8805,28 +8880,31 @@ function updateNurari(e, dt){
       var nstp = e.stormStep; e.stormStep++;
       var nsc = bossCenter(e);
       if(nstp === 9){
-        /* 締めの放射バースト：27方向に羽根を放つ */
+        /* 締めの放射バースト：27方向に羽根を放つ（×0.6で16方向） */
         SFX.enemy("wind");
         var nfoff = rnd(0, 6.28);
-        for(var nfb = 0; nfb < 27; nfb++){
-          var nfba = nfoff + (nfb / 27) * Math.PI * 2;
+        var nfbN = thinCount(27);
+        for(var nfb = 0; nfb < nfbN; nfb++){
+          var nfba = nfoff + (nfb / nfbN) * Math.PI * 2;
           spawnEB(nsc.x, nsc.y - 6, Math.cos(nfba) * 186, Math.sin(nfba) * 186, { color:"#e8e2d2", kind:"feather", r:5, grav:90 });
         }
         burst(nsc.x, nsc.y, "#9fe8ff", 10, 150);
         e.modeT = Math.min(e.modeT, 0.3);
       } else if(nstp % 2 === 0){
-        /* 羽根の雨（5波） */
+        /* 羽根の雨（5波）：1波13発は×0.6で8発（元の落下位置の subset） */
         e.stormWave++;
         SFX.enemy("wind");
         var nwdir = (e.stormWave % 2 === 1) ? 1 : -1;
-        for(var nw2 = 0; nw2 < 13; nw2++)
-          spawnEB(30 + nw2 * 72 + rnd(-16, 16), -16 - rnd(0, 30), nwdir * rnd(50, 110), rnd(215, 265), { color:"#e8e2d2", kind:"feather", r:5, life:5 });
+        var nwN = thinCount(13);
+        for(var nw2 = 0; nw2 < nwN; nw2++)
+          spawnEB(30 + thinIdx(nw2, 13, nwN) * 72 + rnd(-16, 16), -16 - rnd(0, 30), nwdir * rnd(50, 110), rnd(215, 265), { color:"#e8e2d2", kind:"feather", r:5, life:5 });
       } else {
-        /* 波の間の狙撃：羽根扇8方向（発射時点で巫女を狙う） */
+        /* 波の間の狙撃：羽根扇8方向（発射時点で巫女を狙う。×0.6で5方向） */
         SFX.enemy("wind");
         var naimF = aimAt(e, 252);
-        for(var nff = 0; nff < 8; nff++){
-          var nffa = naimF.a + (nff - 3.5) * 0.19;
+        var nffN = thinCount(8);
+        for(var nff = 0; nff < nffN; nff++){
+          var nffa = naimF.a + (thinIdx(nff, 8, nffN) - 3.5) * 0.19;
           spawnEB(nsc.x, nsc.y - 4, Math.cos(nffa) * 252, Math.sin(nffa) * 252, { color:"#e8e2d2", kind:"feather", r:5 });
         }
       }
@@ -8843,8 +8921,9 @@ function updateNurari(e, dt){
       e.burst++; e.burstT = 0.22;
       var nrc = bossCenter(e);
       var nroff = e.burst * 0.18;
-      for(var nrb = 0; nrb < 21; nrb++){
-        var nrba = nroff + (nrb / 21) * Math.PI * 2;
+      var nrbN = thinCount(21);
+      for(var nrb = 0; nrb < nrbN; nrb++){
+        var nrba = nroff + (nrb / nrbN) * Math.PI * 2;
         spawnEB(nrc.x, nrc.y - 4, Math.cos(nrba) * 198, Math.sin(nrba) * 198, { color:"#ffffff", kind:"orb", r:6 });
       }
     }
@@ -8867,8 +8946,9 @@ function updateNurari(e, dt){
            12方向をここで放ち、残りの進行は featherStorm モード側が担う */
         nurariBorrow(e, "tengu", "天狗の技 ― 大羽根嵐", "#9fe8ff", 4.4);
         e.mode = "featherStorm"; e.modeT = 4.55; e.burstT = 0; e.stormWave = 0; e.stormStep = 0;
-        for(var bi = 0; bi < 14; bi++){
-          var ba = (bi / 14) * Math.PI * 2 + rnd(0, 0.2);
+        var nbiN = thinCount(14);
+        for(var bi = 0; bi < nbiN; bi++){
+          var ba = (bi / nbiN) * Math.PI * 2 + rnd(0, 0.2);
           spawnEB(c.x, c.y - 6, Math.cos(ba) * 168, Math.sin(ba) * 168, { color:"#e8e2d2", kind:"feather", r:5, grav:120 });
         }
         SFX.enemy("wind"); SFX.warn();
@@ -8882,27 +8962,30 @@ function updateNurari(e, dt){
           nurariBorrow(e, "tengu", "天狗の技 ― 風のリング", "#9fe8ff", 1.6);
           SFX.enemy("wind");
           var offF = e.t * 0.7;
-          for(var ti = 0; ti < 22; ti++){
-            var ta = offF + (ti / 22) * Math.PI * 2;
+          var tiN = thinCount(22), ti2N = thinCount(18);
+          for(var ti = 0; ti < tiN; ti++){
+            var ta = offF + (ti / tiN) * Math.PI * 2;
             spawnEB(c.x, c.y, Math.cos(ta)*176, Math.sin(ta)*176, { color:"#9fe8ff", kind:"orb", r:5 });
           }
-          for(var ti2 = 0; ti2 < 18; ti2++){
-            var ta2 = offF + 0.26 + (ti2 / 18) * Math.PI * 2;
+          for(var ti2 = 0; ti2 < ti2N; ti2++){
+            var ta2 = offF + 0.26 + (ti2 / ti2N) * Math.PI * 2;
             spawnEB(c.x, c.y, Math.cos(ta2)*118, Math.sin(ta2)*118, { color:"#dff8ff", kind:"orb", r:5 });
           }
         } else if(tr2 < 0.18){
           nurariBorrow(e, "tengu", "天狗の技 ― 大きな風のリング", "#9fe8ff", 1.6);
           SFX.enemy("wind");
-          for(var tk = 0; tk < 27; tk++){
-            var taa = (tk / 27) * Math.PI * 2 + e.t * 1.3;
+          var tkN = thinCount(27);
+          for(var tk = 0; tk < tkN; tk++){
+            var taa = (tk / tkN) * Math.PI * 2 + e.t * 1.3;
             spawnEB(c.x, c.y, Math.cos(taa)*192, Math.sin(taa)*192, { color:"#9fe8ff", kind:"orb", r:5 });
           }
         } else {
           nurariBorrow(e, "tengu", "天狗の技 ― 羽根の放射", "#9fe8ff", 1.6);
           SFX.enemy("wind");
           var foffF = rnd(0, 6.28);
-          for(var tj = 0; tj < 20; tj++){
-            var tfa = foffF + (tj / 20) * Math.PI * 2;
+          var tjN = thinCount(20);
+          for(var tj = 0; tj < tjN; tj++){
+            var tfa = foffF + (tj / tjN) * Math.PI * 2;
             var tfs = rnd(95, 165);
             spawnEB(c.x, c.y - 6, Math.cos(tfa)*tfs, Math.sin(tfa)*tfs, { color:"#e8e2d2", kind:"feather", r:5, grav:175 });
           }
@@ -8912,22 +8995,24 @@ function updateNurari(e, dt){
         nurariBorrow(e, "tengu", "天狗の技 ― 風のリング", "#9fe8ff", 1.6);
         SFX.enemy("wind");
         var off = e.t * 0.7;
-        for(var i = 0; i < 16; i++){
-          var a = off + (i / 16) * Math.PI * 2;
+        var niN = thinCount(16), ni2N = thinCount(11);
+        for(var i = 0; i < niN; i++){
+          var a = off + (i / niN) * Math.PI * 2;
           spawnEB(c.x, c.y, Math.cos(a)*176, Math.sin(a)*176, { color:"#9fe8ff", kind:"orb", r:5 });
         }
-        for(var i2 = 0; i2 < 11; i2++){
-          var a2 = off + 0.26 + (i2 / 11) * Math.PI * 2;
+        for(var i2 = 0; i2 < ni2N; i2++){
+          var a2 = off + 0.26 + (i2 / ni2N) * Math.PI * 2;
           spawnEB(c.x, c.y, Math.cos(a2)*118, Math.sin(a2)*118, { color:"#dff8ff", kind:"orb", r:5 });
         }
       } else {
         /* 第1形態：天狗の固有技「羽根の放射」を借りる（天狗本体の第1形態仕様：
-           14方向・速度はばらつき・重力で舞い落ちる） */
+           14方向・速度はばらつき・重力で舞い落ちる。×0.6で8方向） */
         nurariBorrow(e, "tengu", "天狗の技 ― 羽根の放射", "#9fe8ff", 1.6);
         SFX.enemy("wind");
         var foffN = rnd(0, 6.28);
-        for(var tj1 = 0; tj1 < 14; tj1++){
-          var tfa1 = foffN + (tj1 / 14) * Math.PI * 2;
+        var tj1N = thinCount(14);
+        for(var tj1 = 0; tj1 < tj1N; tj1++){
+          var tfa1 = foffN + (tj1 / tj1N) * Math.PI * 2;
           var tfs1 = rnd(95, 165);
           spawnEB(c.x, c.y - 6, Math.cos(tfa1) * tfs1, Math.sin(tfa1) * tfs1, { color:"#e8e2d2", kind:"feather", r:5, grav:175 });
         }
@@ -8959,8 +9044,9 @@ function updateNurari(e, dt){
         nurariBorrow(e, "gasha", "がしゃどくろの技 ― 骨のリング", "#efe9da", 1.7);
         SFX.enemy("bone");
         var goff = e.t * 0.6;
-        for(var g1 = 0; g1 < 16; g1++){
-          var ga = goff + (g1 / 16) * Math.PI * 2;
+        var g1N = thinCount(16);
+        for(var g1 = 0; g1 < g1N; g1++){
+          var ga = goff + (g1 / g1N) * Math.PI * 2;
           spawnEB(c.x, c.y, Math.cos(ga)*172, Math.sin(ga)*172, { color:"#efe9da", kind:"bone", r:6 });
         }
         addHazard(player.x + player.w/2 - 24, 48, "bone", "#efe9da");
@@ -9021,8 +9107,9 @@ function updateNurari(e, dt){
           nurariBorrow(e, "fujin", "風神の技 ― 風の刃", "#a8e063", 1.5);
           SFX.enemy("wind");
           var baseF = aimAt(e, 272);
-          for(var ff2 = 0; ff2 < 6; ff2++){
-            var ffa2 = baseF.a + (ff2 - 2.5) * 0.19;
+          var ff2N = thinCount(6);
+          for(var ff2 = 0; ff2 < ff2N; ff2++){
+            var ffa2 = baseF.a + (thinIdx(ff2, 6, ff2N) - 2.5) * 0.19;
             spawnEB(c.x, c.y, Math.cos(ffa2)*272, Math.sin(ffa2)*272, { color:"#a8e063", kind:"blade", r:7 });
           }
         }
@@ -9030,8 +9117,9 @@ function updateNurari(e, dt){
         nurariBorrow(e, "fujin", "風神の技 ― 風の刃", "#a8e063", 1.5);
         SFX.enemy("wind");
         var base = aimAt(e, 272);
-        for(var f = 0; f < 6; f++){
-          var fa = base.a + (f - 2.5) * 0.19;
+        var nfN = thinCount(6);
+        for(var f = 0; f < nfN; f++){
+          var fa = base.a + (thinIdx(f, 6, nfN) - 2.5) * 0.19;
           spawnEB(c.x, c.y, Math.cos(fa)*272, Math.sin(fa)*272, { color:"#a8e063", kind:"blade", r:7 });
         }
       }
@@ -9061,9 +9149,11 @@ function updateNurari(e, dt){
         } else {
           nurariBorrow(e, "kyubi", "九尾の技 ― 火の輪", "#8a6bff", 1.6);
           SFX.enemy("fire");
-          for(var j = 0; j < 27; j++){
-            var aa2 = (j / 27) * Math.PI * 2;
-            if(j === 6 || j === 7 || j === 8) continue;
+          var kjN = thinCount(27);
+          for(var j = 0; j < kjN; j++){
+            var jj2 = thinIdx(j, 27, kjN);
+            var aa2 = (jj2 / 27) * Math.PI * 2;
+            if(jj2 === 6 || jj2 === 7 || jj2 === 8) continue;
             spawnEB(c.x, c.y, Math.cos(aa2)*168, Math.sin(aa2)*168, { color:"#b18cff", kind:"orb", r:6 });
           }
         }
@@ -9074,9 +9164,11 @@ function updateNurari(e, dt){
       } else {
         nurariBorrow(e, "kyubi", "九尾の技 ― 火の輪", "#8a6bff", 1.6);
         SFX.enemy("fire");
-        for(var j = 0; j < 27; j++){
-          var aa2 = (j / 27) * Math.PI * 2;
-          if(j === 6 || j === 7 || j === 8) continue;
+        var kjN2 = thinCount(27);
+        for(var j = 0; j < kjN2; j++){
+          var jj3 = thinIdx(j, 27, kjN2);
+          var aa2 = (jj3 / 27) * Math.PI * 2;
+          if(jj3 === 6 || jj3 === 7 || jj3 === 8) continue;
           spawnEB(c.x, c.y, Math.cos(aa2)*168, Math.sin(aa2)*168, { color:"#b18cff", kind:"orb", r:6 });
         }
       }
@@ -9119,16 +9211,20 @@ function updateNurari(e, dt){
     player.y = FLOOR - player.h;
     e.x = swapX; e.y = swapY; e.tx = e.x; e.ty = e.y;
     var nb = aimAt(e, 262);
-    for(var nf = 0; nf < 4; nf++){
-      var na = nb.a + (nf - 1.5) * 0.2;
+    var nfN2 = thinCount(4);
+    for(var nf = 0; nf < nfN2; nf++){
+      var na = nb.a + (thinIdx(nf, 4, nfN2) - 1.5) * 0.2;
       spawnEB(e.x + e.w/2, e.y + e.h/2, Math.cos(na)*262, Math.sin(na)*262, { color:"#7fe8d8", kind:"orb", r:6 });
     }
   } else {
-    /* ===== 固有技：茶の霊弾 ― ゆっくり追尾する紫の弾を5発 ===== */
+    /* ===== 固有技：茶の霊弾 ― ゆっくり追尾する紫の弾を5発（×0.6で3発、
+       元の速度列の subset：通し番号0,2,4） ===== */
     floatText(c.x - 34, e.y - 24, "総大将の茶", "#c9a6ff", 15, 1.0);
     SFX.enemy("nurari");
-    for(var th = 0; th < 5; th++){
-      spawnEB(c.x - 20, c.y - 24 + th * 16, -168, -60 + th * 40, { color:"#c9a6ff", kind:"orb", r:7, homing:1.7, life:4.2 });
+    var thN = thinCount(5);
+    for(var th = 0; th < thN; th++){
+      var thj = thinIdx(th, 5, thN);
+      spawnEB(c.x - 20, c.y - 24 + thj * 16, -168, -60 + thj * 40, { color:"#c9a6ff", kind:"orb", r:7, homing:1.7, life:4.2 });
     }
   }
 }
@@ -9142,10 +9238,11 @@ function updateChochin(e, dt){
   if(e.atkT <= 0){
     var c = trashCenter(e), b = aimAt(e, 216);
     SFX.enemy("fire");
+    /* 雑魚の弾も通常弾幕として×0.6対象：単発は最小1発で不変。
+       後半の追加2発は同時発射数として thinCount(2)＝1発に減らす */
     spawnEB(c.x, c.y + 6, b.vx, b.vy, { color:"#ffb35c", kind:"orb", r:6 });
-    if(G.bossIdx >= 2){ var a2 = b.a + 0.24, a3 = b.a - 0.24;
+    if(G.bossIdx >= 2){ var a2 = b.a + 0.24;
       spawnEB(c.x, c.y + 6, Math.cos(a2)*200, Math.sin(a2)*200, { color:"#ff9a3c", kind:"orb", r:5 });
-      spawnEB(c.x, c.y + 6, Math.cos(a3)*200, Math.sin(a3)*200, { color:"#ff9a3c", kind:"orb", r:5 });
     }
     e.atkT = rnd(1.7, 2.4);
   }
@@ -9169,8 +9266,9 @@ function updateKasa(e, dt){
   if(e.atkT <= 0){
     var c = trashCenter(e);
     SFX.enemy("wind");
-    for(var i = 0; i < 5; i++){
-      var a = (i / 5) * Math.PI * 2 + e.t;
+    var kaN = thinCount(5);
+    for(var i = 0; i < kaN; i++){
+      var a = (i / kaN) * Math.PI * 2 + e.t;
       spawnEB(c.x, c.y, Math.cos(a)*128, Math.sin(a)*128, { color:"#c9a6ff", kind:"orb", r:5 });
     }
     e.atkT = rnd(2.6, 3.4);
@@ -9186,8 +9284,9 @@ function updateIttan(e, dt){
   if(e.atkT <= 0){
     var c = trashCenter(e);
     SFX.enemy("generic");
+    /* 同時の落下弾2発は×0.6で thinCount(2)＝1発。確率で出る狙い弾は
+       単発扱い（出る時は必ず1発）で従来どおり */
     spawnEB(c.x - 14, c.y + 12, rnd(-24, 10), 176, { color:"#f6f1e4", kind:"orb", r:5 });
-    spawnEB(c.x + 16, c.y + 12, rnd(-10, 24), 188, { color:"#f6f1e4", kind:"orb", r:5 });
     if(Math.random() < 0.4){ var b = aimAt(e, 205); spawnEB(c.x, c.y, b.vx, b.vy, { color:"#e8b34b", kind:"orb", r:5 }); }
     e.atkT = rnd(1.8, 2.6);
   }
@@ -9203,6 +9302,7 @@ function updateKappa(e, dt){
   if(e.atkT <= 0){
     SFX.enemy("generic");
     var b = aimAt(e, 252);
+    /* 本弾は単発（最小1発で不変）。確率で出る2発目も単発扱いで従来どおり */
     spawnEB(c.x, c.y - 8, b.vx, b.vy - 130, { color:"#7ec8e8", kind:"orb", r:6, grav:330 });
     if(Math.random() < 0.45) spawnEB(c.x, c.y - 8, b.vx * 0.82, b.vy - 190, { color:"#7ec8e8", kind:"orb", r:5, grav:330 });
     e.atkT = rnd(1.8, 2.5);
@@ -9253,6 +9353,7 @@ function updateYurei(e, dt){
   if(e.atkT <= 0){
     var c = trashCenter(e), b = aimAt(e, 152);
     SFX.enemy("snow");
+    /* 単発の霊弾：×0.6対象だが最小1発保証で従来どおり1発出る */
     spawnEB(c.x, c.y, b.vx, b.vy, { color:"#bfe6ff", kind:"orb", r:6, homing:0.85, life:4.2 });
     e.atkT = rnd(2.1, 2.9);
   }
@@ -9268,9 +9369,8 @@ function updateHone(e, dt){
   if(e.atkT <= 0){
     SFX.enemy("bone");
     var b = aimAt(e, 252);
+    /* 同時2発は×0.6で thinCount(2)＝1発（狙い本体のみ） */
     spawnEB(c.x, c.y - 6, b.vx, b.vy, { color:"#efe9da", kind:"bone", r:6 });
-    var a2 = b.a + 0.17;
-    spawnEB(c.x, c.y - 6, Math.cos(a2)*238, Math.sin(a2)*238, { color:"#efe9da", kind:"bone", r:5 });
     e.atkT = rnd(1.9, 2.6);
   }
 }
@@ -9284,8 +9384,10 @@ function updateYukinko(e, dt){
   if(e.atkT <= 0){
     SFX.enemy("snow");
     var b = aimAt(e, 205);
-    for(var i = -1; i <= 1; i++){
-      var a = b.a + i * 0.24;
+    /* 扇3発は×0.6で2発（元の両端の角度：狙いを挟む2方向） */
+    var yuN = thinCount(3);
+    for(var k = 0; k < yuN; k++){
+      var a = b.a + (thinIdx(k, 3, yuN) - 1) * 0.24;
       spawnEB(c.x, c.y - 8, Math.cos(a)*205, Math.sin(a)*205, { color:"#bfe6ff", kind:"snow", r:5 });
     }
     e.atkT = rnd(1.8, 2.4);
@@ -9593,8 +9695,11 @@ function updateShots(dt){
     if(b.split && b.t >= b.split){
       b.split = 0;
       var bb = aimAt({ x:b.x - 1, y:b.y - 1, w:2, h:2 }, 228);
-      for(var k2=0;k2<8;k2++){
-        var aa = bb.a + (k2 - 3.5) * 0.26;
+      /* 分裂の子弾は通常弾幕として×0.6対象（8→5発、元の角度の subset）。
+         親弾の分裂数（九尾の尾8の同時3発）は構造数として無変更 */
+      var spcN = thinCount(8);
+      for(var k2=0;k2<spcN;k2++){
+        var aa = bb.a + (thinIdx(k2, 8, spcN) - 3.5) * 0.26;
         spawnEB(b.x, b.y, Math.cos(aa)*228, Math.sin(aa)*228, { color:b.color, kind:"orb", r:6 });
       }
       burst(b.x, b.y, b.color, 8, 110);
